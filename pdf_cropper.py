@@ -65,6 +65,30 @@ def save_json(path: Path, data):
     path.write_text(json.dumps(data, indent=2))
 
 
+def copy_image_to_clipboard(img: Image.Image):
+    temp_path = os.path.join(tempfile.gettempdir(), "pdf_crop_clipboard.png")
+    img.save(temp_path, format="PNG")
+    
+    if sys.platform == "darwin":
+        subprocess.run([
+            "osascript", "-e",
+            f'set the clipboard to (read (POSIX file "{temp_path}") as «class PNGf»)'
+        ], check=True)
+    elif sys.platform == "win32":
+        temp_bmp = os.path.join(tempfile.gettempdir(), "pdf_crop_clipboard.bmp")
+        img.convert("RGB").save(temp_bmp, format="BMP")
+        
+        ps_script = f'''
+Add-Type -AssemblyName System.Windows.Forms
+$img = [System.Drawing.Image]::FromFile("{temp_bmp.replace(chr(92), '/')}")
+[System.Windows.Forms.Clipboard]::SetImage($img)
+$img.Dispose()
+'''
+        subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True)
+    else:
+        raise Exception("Clipboard not supported on this platform")
+
+
 class AppConfig:
     """Global app configuration."""
     
@@ -1879,54 +1903,7 @@ class SourceEditor(ctk.CTkFrame):
         
         try:
             img = self._get_cropped_image(self.current_page)
-            
-            temp_path = os.path.join(tempfile.gettempdir(), "pdf_crop_clipboard.png")
-            img.save(temp_path, format="PNG")
-            
-            if sys.platform == "darwin":
-                subprocess.run([
-                    "osascript", "-e",
-                    f'set the clipboard to (read (POSIX file "{temp_path}") as «class PNGf»)'
-                ], check=True)
-            elif sys.platform == "win32":
-                import ctypes
-                from ctypes import wintypes
-                
-                user32 = ctypes.windll.user32
-                kernel32 = ctypes.windll.kernel32
-                
-                CF_DIB = 8
-                GMEM_MOVEABLE = 0x0002
-                
-                img_bmp = img.convert("RGB")
-                import struct
-                
-                width, height = img_bmp.size
-                bmp_header = struct.pack('<IiiHHIIiiII', 40, width, -height, 1, 24, 0, 0, 0, 0, 0, 0)
-                
-                row_size = (width * 3 + 3) & ~3
-                pixel_data = bytearray(row_size * height)
-                
-                raw = img_bmp.tobytes()
-                for y in range(height):
-                    for x in range(width):
-                        src_idx = (y * width + x) * 3
-                        dst_idx = y * row_size + x * 3
-                        pixel_data[dst_idx:dst_idx+3] = raw[src_idx+2:src_idx+3] + raw[src_idx+1:src_idx+2] + raw[src_idx:src_idx+1]
-                
-                data = bmp_header + bytes(pixel_data)
-                
-                h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-                p_mem = kernel32.GlobalLock(h_mem)
-                ctypes.memmove(p_mem, data, len(data))
-                kernel32.GlobalUnlock(h_mem)
-                
-                user32.OpenClipboard(None)
-                user32.EmptyClipboard()
-                user32.SetClipboardData(CF_DIB, h_mem)
-                user32.CloseClipboard()
-            else:
-                raise Exception("Clipboard not supported on this platform")
+            copy_image_to_clipboard(img)
             
             self.app.config.add_history({
                 "action": "copy",
@@ -2975,6 +2952,10 @@ class ProjectEditor(ctk.CTkFrame):
         self.view_mode = tk.StringVar(value="grid")
         self.pdf_current_page = 0
         
+        self.copy_queue: list[int] = []
+        self.copy_queue_index = 0
+        self.copy_queue_active = False
+        
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         
@@ -2991,8 +2972,20 @@ class ProjectEditor(ctk.CTkFrame):
         self.bind("<Left>", lambda e: self._nav_prev())
         self.bind("<Right>", lambda e: self._nav_next())
         self.bind("<question>", lambda e: self._show_keybind_help())
-        self.bind("<Escape>", lambda e: self._clear_selection())
+        self.bind("<Escape>", lambda e: self._on_escape())
+        self.bind("<Control-v>", lambda e: self._on_ctrl_v())
+        self.bind("<Control-c>", lambda e: self._copy_selected_page())
         self.focus_set()
+    
+    def _on_escape(self):
+        if self.copy_queue_active:
+            self._cancel_queue_copy()
+        else:
+            self._clear_selection()
+    
+    def _on_ctrl_v(self):
+        if self.copy_queue_active:
+            self._queue_copy_next()
     
     def _nav_prev(self):
         if self.view_mode.get() == "pdf":
@@ -3142,6 +3135,63 @@ class ProjectEditor(ctk.CTkFrame):
             hover_color="#c82333",
             command=self._remove_selected
         ).pack(fill="x", padx=10, pady=5)
+        
+        # Copy
+        ctk.CTkFrame(sidebar, height=2).pack(fill="x", padx=10, pady=15)
+        
+        ctk.CTkLabel(
+            sidebar,
+            text="Copy to Clipboard",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(pady=(5, 10), padx=10, anchor="w")
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Copy Selected Page",
+            command=self._copy_selected_page
+        ).pack(fill="x", padx=10, pady=3)
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Start Queue Copy",
+            fg_color="#6f42c1",
+            hover_color="#5a32a3",
+            command=self._start_queue_copy
+        ).pack(fill="x", padx=10, pady=3)
+        
+        self.queue_frame = ctk.CTkFrame(sidebar, fg_color="#2b2b2b", corner_radius=8)
+        self.queue_frame.pack(fill="x", padx=10, pady=5)
+        self.queue_frame.pack_forget()
+        
+        self.queue_label = ctk.CTkLabel(
+            self.queue_frame,
+            text="Queue: 0/0",
+            font=ctk.CTkFont(size=12)
+        )
+        self.queue_label.pack(pady=(8, 4), padx=10)
+        
+        self.queue_progress = ctk.CTkProgressBar(self.queue_frame, width=200)
+        self.queue_progress.pack(pady=4, padx=10)
+        self.queue_progress.set(0)
+        
+        queue_btns = ctk.CTkFrame(self.queue_frame, fg_color="transparent")
+        queue_btns.pack(pady=(4, 8), padx=10)
+        
+        ctk.CTkButton(
+            queue_btns,
+            text="Next (Ctrl+V)",
+            width=90,
+            command=self._queue_copy_next
+        ).pack(side="left", padx=2)
+        
+        ctk.CTkButton(
+            queue_btns,
+            text="Cancel",
+            width=70,
+            fg_color="#dc3545",
+            hover_color="#c82333",
+            command=self._cancel_queue_copy
+        ).pack(side="left", padx=2)
         
         # Export
         ctk.CTkFrame(sidebar, height=2).pack(fill="x", padx=10, pady=15)
@@ -3610,6 +3660,117 @@ class ProjectEditor(ctk.CTkFrame):
         self.last_clicked_index = None
         self._update_selected_label()
         self._refresh_pages()
+    
+    def _copy_selected_page(self):
+        if not self.selected_pages:
+            messagebox.showinfo("No Selection", "Select a page first.")
+            return
+        
+        idx = min(self.selected_pages)
+        try:
+            img = self._load_page_image(idx)
+            if img:
+                copy_image_to_clipboard(img)
+                self.status_label.configure(text=f"Copied page {idx + 1} to clipboard")
+        except Exception as e:
+            messagebox.showerror("Error", f"Copy failed: {e}")
+    
+    def _start_queue_copy(self):
+        if not self.selected_pages:
+            messagebox.showinfo("No Selection", "Select pages to queue for copying.\nUse Shift+Click for range selection.")
+            return
+        
+        self.copy_queue = sorted(self.selected_pages)
+        self.copy_queue_index = 0
+        self.copy_queue_active = True
+        
+        self._update_queue_ui()
+        self.queue_frame.pack(fill="x", padx=10, pady=5)
+        
+        self._queue_copy_next()
+    
+    def _queue_copy_next(self):
+        if not self.copy_queue_active or self.copy_queue_index >= len(self.copy_queue):
+            self._cancel_queue_copy()
+            self.status_label.configure(text="Queue complete!")
+            return
+        
+        idx = self.copy_queue[self.copy_queue_index]
+        try:
+            img = self._load_page_image(idx)
+            if img:
+                copy_image_to_clipboard(img)
+                self.status_label.configure(text=f"Copied {self.copy_queue_index + 1}/{len(self.copy_queue)} (page {idx + 1})")
+                self.copy_queue_index += 1
+                self._update_queue_ui()
+        except Exception as e:
+            messagebox.showerror("Error", f"Copy failed: {e}")
+    
+    def _cancel_queue_copy(self):
+        self.copy_queue_active = False
+        self.copy_queue = []
+        self.copy_queue_index = 0
+        self.queue_frame.pack_forget()
+    
+    def _update_queue_ui(self):
+        total = len(self.copy_queue)
+        current = self.copy_queue_index
+        self.queue_label.configure(text=f"Queue: {current}/{total}")
+        self.queue_progress.set(current / total if total > 0 else 0)
+    
+    def _load_page_image(self, idx: int) -> Optional[Image.Image]:
+        if idx < 0 or idx >= len(self.project.pages):
+            return None
+        
+        page = self.project.pages[idx]
+        
+        if page.get("type") == "custom":
+            filepath = self.project.path / page["filename"]
+            if filepath.exists():
+                return Image.open(filepath)
+        else:
+            source_path = Path(page.get("source_path", ""))
+            if source_path.exists():
+                source = Source(source_path)
+                page_num = page.get("page", 1)
+                
+                source_type = source.meta.get("source_type", "pdf")
+                if source_type == "pdf":
+                    pdf_files = sorted(source_path.glob("*.pdf"))
+                    if pdf_files:
+                        doc = fitz.open(pdf_files[0])
+                        if page_num <= len(doc):
+                            pdf_page = doc[page_num - 1]
+                            mat = fitz.Matrix(2.0, 2.0)
+                            pix = pdf_page.get_pixmap(matrix=mat)
+                            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                            
+                            crop = source.get_page_crop(page_num)
+                            w, h = img.size
+                            left = int(crop["left"])
+                            right = int(crop["right"])
+                            top = int(crop["top"])
+                            bottom = int(crop["bottom"])
+                            img = img.crop((left, top, w - right, h - bottom))
+                            
+                            doc.close()
+                            return img
+                else:
+                    images_folder = source_path / "images"
+                    if images_folder.exists():
+                        img_files = sorted([f for f in images_folder.iterdir() if f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
+                        if page_num <= len(img_files):
+                            img = Image.open(img_files[page_num - 1])
+                            
+                            crop = source.get_page_crop(page_num)
+                            w, h = img.size
+                            left = int(crop["left"])
+                            right = int(crop["right"])
+                            top = int(crop["top"])
+                            bottom = int(crop["bottom"])
+                            return img.crop((left, top, w - right, h - bottom))
+        
+        return None
     
     def _clear_all(self):
         if not self.project.pages:
