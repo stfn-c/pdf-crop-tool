@@ -262,6 +262,14 @@ class Source:
         end = pr.get("end") or self.get_page_count()
         return start, end
     
+    def set_page_range(self, start: int, end: int):
+        self.meta["page_range"] = {"start": start, "end": end}
+        self.save_meta()
+    
+    def get_visible_page_count(self) -> int:
+        start, end = self.get_page_range()
+        return end - start + 1
+    
     def get_all_tags(self) -> set[str]:
         tags = set()
         for page_tags in self.meta.get("page_tags", {}).values():
@@ -1186,6 +1194,7 @@ class SourceEditor(ctk.CTkFrame):
         self.current_page = source.meta.get("last_page", 1)
         self.page_images: list[Image.Image] = []
         self.total_pages = 0
+        self.page_offset = 0
         self.display_scale = source.meta.get("zoom", 0.5)
         
         self.margin_left = tk.DoubleVar(value=source.get_default_crop()["left"])
@@ -1280,6 +1289,12 @@ class SourceEditor(ctk.CTkFrame):
             sidebar,
             text="Auto-Detect Margins",
             command=self._auto_detect_margins
+        ).pack(fill="x", padx=15, pady=2)
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Set Page Range",
+            command=self._set_page_range
         ).pack(fill="x", padx=15, pady=2)
         
         ctk.CTkButton(
@@ -1524,6 +1539,8 @@ class SourceEditor(ctk.CTkFrame):
     def _load_pages(self):
         self.page_images = []
         
+        start, end = self.source.get_page_range()
+        
         if self.source.source_type == "pdf":
             pdf_path = self.source.pdf_path
             if not pdf_path or not pdf_path.exists():
@@ -1533,24 +1550,33 @@ class SourceEditor(ctk.CTkFrame):
             zoom = 150 / 72
             mat = fitz.Matrix(zoom, zoom)
             
-            for page_num in range(len(doc)):
+            total_in_pdf = len(doc)
+            end = min(end, total_in_pdf)
+            
+            for page_num in range(start - 1, end):
                 page = doc[page_num]
                 pix = page.get_pixmap(matrix=mat)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 self.page_images.append(img)
             
             doc.close()
+            self.page_offset = start - 1
         else:
-            # PNG folder
             pngs = sorted(
                 list(self.source.path.glob("*.png")) + list(self.source.path.glob("*.PNG")),
                 key=lambda p: p.name.lower()
             )
-            for png in pngs:
-                if png.name != "source_meta.json":
-                    img = Image.open(png)
-                    self.page_images.append(img.copy())
-                    img.close()
+            pngs = [p for p in pngs if p.name != "source_meta.json"]
+            
+            total_pngs = len(pngs)
+            end = min(end, total_pngs)
+            
+            for png in pngs[start - 1:end]:
+                img = Image.open(png)
+                self.page_images.append(img.copy())
+                img.close()
+            
+            self.page_offset = start - 1
         
         self.total_pages = len(self.page_images)
         self.current_page = 1
@@ -1583,8 +1609,9 @@ class SourceEditor(ctk.CTkFrame):
         all_tags = self.source.get_all_tags()
         if all_tags:
             self.all_tags_label.configure(text=f"All tags: {', '.join(sorted(all_tags))}")
+            self.all_tags_label.pack(padx=15, pady=(5, 0), anchor="w")
         else:
-            self.all_tags_label.configure(text="")
+            self.all_tags_label.pack_forget()
         
         self._update_quick_tags()
     
@@ -1594,7 +1621,10 @@ class SourceEditor(ctk.CTkFrame):
         
         all_tags = sorted(self.source.get_all_tags())
         if not all_tags:
+            self.quick_tags_frame.pack_forget()
             return
+        
+        self.quick_tags_frame.pack(fill="x", padx=15, pady=(5, 0))
         
         current_tags = set(self.source.get_page_tags(self.current_page))
         
@@ -1929,6 +1959,39 @@ class SourceEditor(ctk.CTkFrame):
         
         return img.crop((left, top, w - right, h - bottom))
     
+    def _set_page_range(self):
+        total = self.source.get_page_count()
+        current_start, current_end = self.source.get_page_range()
+        
+        dialog = ctk.CTkInputDialog(
+            text=f"Enter page range (1-{total}):\nFormat: start-end (e.g., 5-15)\nCurrent: {current_start}-{current_end}",
+            title="Set Page Range"
+        )
+        result = dialog.get_input()
+        
+        if not result:
+            return
+        
+        try:
+            if "-" in result:
+                parts = result.split("-")
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+            else:
+                start = 1
+                end = int(result.strip())
+            
+            start = max(1, min(start, total))
+            end = max(start, min(end, total))
+            
+            self.source.set_page_range(start, end)
+            self._load_pages()
+            self._update_display()
+            self.status_label.configure(text=f"Showing pages {start}-{end} ({end - start + 1} pages)")
+            
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Enter a valid range like '5-15' or just '10' for pages 1-10")
+    
     def _auto_detect_margins(self):
         if not self.page_images:
             return
@@ -1944,9 +2007,7 @@ class SourceEditor(ctk.CTkFrame):
         self.per_page_bar.grid_forget()
         self._update_average_enhancements()
         
-        start, end = self.source.get_page_range()
-        page_count = min(end, self.total_pages) - start + 1
-        self.status_label.configure(text=f"Showing average of {page_count} pages - adjust margins, then Exit")
+        self.status_label.configure(text=f"Showing average of {self.total_pages} pages - adjust margins, then Exit")
     
     def _compute_average_image(self) -> Optional[Image.Image]:
         if not self.page_images:
@@ -1954,11 +2015,8 @@ class SourceEditor(ctk.CTkFrame):
         
         import numpy as np
         
-        start, end = self.source.get_page_range()
-        
         arrays = []
-        for i in range(start - 1, min(end, self.total_pages)):
-            img = self.page_images[i]
+        for img in self.page_images:
             arrays.append(np.array(img, dtype=np.float32))
         
         if not arrays:
