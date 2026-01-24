@@ -15,6 +15,8 @@ import os
 import random
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import tkinter as tk
 import urllib.request
@@ -1868,17 +1870,53 @@ class SourceEditor(ctk.CTkFrame):
         try:
             img = self._get_cropped_image(self.current_page)
             
-            img_data = io.BytesIO()
-            img.save(img_data, format="PNG")
-            img_bytes = img_data.getvalue()
+            temp_path = os.path.join(tempfile.gettempdir(), "pdf_crop_clipboard.png")
+            img.save(temp_path, format="PNG")
             
-            with open("/tmp/pdf_crop_clipboard.png", "wb") as f:
-                f.write(img_bytes)
-            
-            subprocess.run([
-                "osascript", "-e",
-                'set the clipboard to (read (POSIX file "/tmp/pdf_crop_clipboard.png") as «class PNGf»)'
-            ], check=True)
+            if sys.platform == "darwin":
+                subprocess.run([
+                    "osascript", "-e",
+                    f'set the clipboard to (read (POSIX file "{temp_path}") as «class PNGf»)'
+                ], check=True)
+            elif sys.platform == "win32":
+                import ctypes
+                from ctypes import wintypes
+                
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                
+                CF_DIB = 8
+                GMEM_MOVEABLE = 0x0002
+                
+                img_bmp = img.convert("RGB")
+                import struct
+                
+                width, height = img_bmp.size
+                bmp_header = struct.pack('<IiiHHIIiiII', 40, width, -height, 1, 24, 0, 0, 0, 0, 0, 0)
+                
+                row_size = (width * 3 + 3) & ~3
+                pixel_data = bytearray(row_size * height)
+                
+                raw = img_bmp.tobytes()
+                for y in range(height):
+                    for x in range(width):
+                        src_idx = (y * width + x) * 3
+                        dst_idx = y * row_size + x * 3
+                        pixel_data[dst_idx:dst_idx+3] = raw[src_idx+2:src_idx+3] + raw[src_idx+1:src_idx+2] + raw[src_idx:src_idx+1]
+                
+                data = bmp_header + bytes(pixel_data)
+                
+                h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+                p_mem = kernel32.GlobalLock(h_mem)
+                ctypes.memmove(p_mem, data, len(data))
+                kernel32.GlobalUnlock(h_mem)
+                
+                user32.OpenClipboard(None)
+                user32.EmptyClipboard()
+                user32.SetClipboardData(CF_DIB, h_mem)
+                user32.CloseClipboard()
+            else:
+                raise Exception("Clipboard not supported on this platform")
             
             self.app.config.add_history({
                 "action": "copy",
