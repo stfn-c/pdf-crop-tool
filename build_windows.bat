@@ -26,7 +26,7 @@ if errorlevel 1 (
 echo [2/4] Activating venv and installing dependencies...
 call venv\Scripts\activate.bat
 python -m pip install --upgrade pip
-pip install PyMuPDF Pillow customtkinter pyinstaller
+pip install PyMuPDF Pillow customtkinter numpy pyinstaller
 
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies

@@ -1996,7 +1996,11 @@ class SourceEditor(ctk.CTkFrame):
         if not self.page_images:
             return
         
-        self.average_image_original = self._compute_average_image()
+        try:
+            self.average_image_original = self._compute_average_image()
+        except Exception as e:
+            messagebox.showerror("Error", f"Auto-detect failed: {e}")
+            return
         
         if not self.average_image_original:
             self.status_label.configure(text="Could not compute average image")
@@ -2015,8 +2019,14 @@ class SourceEditor(ctk.CTkFrame):
         
         import numpy as np
         
+        target_size = self.page_images[0].size
+        
         arrays = []
         for img in self.page_images:
+            if img.size != target_size:
+                img = img.resize(target_size, Image.LANCZOS)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
             arrays.append(np.array(img, dtype=np.float32))
         
         if not arrays:

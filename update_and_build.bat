@@ -20,15 +20,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/3] Activating venv...
+echo [2/3] Activating venv and updating dependencies...
 if not exist venv (
     echo Creating virtual environment first...
     python -m venv venv
-    call venv\Scripts\activate.bat
-    pip install PyMuPDF Pillow customtkinter pyinstaller
-) else (
-    call venv\Scripts\activate.bat
 )
+call venv\Scripts\activate.bat
+pip install --upgrade PyMuPDF Pillow customtkinter numpy pyinstaller
 
 echo [3/3] Building executable...
 pyinstaller --onefile --windowed --name "EnmeiSharkTankPitch" --noconfirm pdf_cropper.py
