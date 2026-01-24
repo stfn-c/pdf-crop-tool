@@ -26,7 +26,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 from typing import Optional
 
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = None
 
 VISION_MODELS = [
     ("Google Gemini 2.0 Flash", "google/gemini-2.0-flash-001"),
@@ -144,6 +144,15 @@ class AppConfig:
     
     def get_history(self) -> list[dict]:
         return self.data.get("history", [])
+    
+    @property
+    def api_key(self) -> Optional[str]:
+        return self.data.get("openrouter_api_key")
+    
+    @api_key.setter
+    def api_key(self, key: str):
+        self.data["openrouter_api_key"] = key
+        self.save()
     
     @property
     def sources_folder(self) -> Optional[Path]:
@@ -1861,7 +1870,7 @@ class SourceEditor(ctk.CTkFrame):
         if not self.page_images:
             messagebox.showinfo("No Pages", "No pages loaded.")
             return
-        AIAutoTagDialog(self, self.source, self.page_images, self._update_tags_display, self._update_all_tags_display)
+        AIAutoTagDialog(self, self.source, self.page_images, self._update_tags_display, self._update_all_tags_display, self.app.config)
     
     def _copy_page(self):
         if not self.page_images:
@@ -2164,12 +2173,13 @@ class BulkTagDialog(ctk.CTkToplevel):
 
 
 class AIAutoTagDialog(ctk.CTkToplevel):
-    def __init__(self, parent, source: Source, page_images: list, update_callback, update_all_callback):
+    def __init__(self, parent, source: Source, page_images: list, update_callback, update_all_callback, config: AppConfig):
         super().__init__(parent)
         self.source = source
         self.page_images = page_images
         self.update_callback = update_callback
         self.update_all_callback = update_all_callback
+        self.config = config
         
         self.title("AI Auto-Tag")
         self.geometry("1200x750")
@@ -2229,12 +2239,31 @@ class AIAutoTagDialog(ctk.CTkToplevel):
         self.workers_label = ctk.CTkLabel(settings_frame, text="10", width=30)
         self.workers_label.pack(side="left")
         workers_slider.configure(command=lambda v: self.workers_label.configure(text=str(int(v))))
+        
+        ctk.CTkButton(
+            settings_frame, text="API Key", width=80,
+            fg_color="#6c757d", hover_color="#5a6268",
+            command=self._set_api_key
+        ).pack(side="left", padx=(15, 0))
     
     def _on_model_change(self, display_name: str):
         for name, model_id in VISION_MODELS:
             if name == display_name:
                 self.model_var.set(model_id)
                 break
+    
+    def _set_api_key(self):
+        current = self.config.api_key or ""
+        masked = current[:10] + "..." if len(current) > 10 else current
+        
+        key = simpledialog.askstring(
+            "OpenRouter API Key",
+            f"Current: {masked if current else '(not set)'}\n\nEnter your OpenRouter API key:\n(Get one at https://openrouter.ai/keys)",
+            parent=self
+        )
+        if key is not None:
+            self.config.api_key = key.strip()
+            messagebox.showinfo("Saved", "API key saved.", parent=self)
     
     def _setup_left_panel(self):
         left = ctk.CTkFrame(self)
@@ -2496,7 +2525,7 @@ Only include tags that clearly match. If no tags match, return {{"tags": [], "re
         }
         
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://pdf-crop-tool.local",
             "X-Title": "PDF Crop Tool"
@@ -2660,6 +2689,10 @@ Only include tags that clearly match. If no tags match, return {{"tags": [], "re
             self.apply_btn.configure(state="normal")
     
     def _run_trial(self):
+        if not self.config.api_key:
+            messagebox.showwarning("No API Key", "Set your OpenRouter API key first.\n\nClick the 'API Key' button in the header.")
+            return
+        
         tag_defs = self._get_tag_definitions()
         if not tag_defs:
             messagebox.showwarning("No Tags", "Add at least one tag definition.")
@@ -2673,6 +2706,10 @@ Only include tags that clearly match. If no tags match, return {{"tags": [], "re
         self._process_pages(page_indices, tag_defs)
     
     def _run_all(self):
+        if not self.config.api_key:
+            messagebox.showwarning("No API Key", "Set your OpenRouter API key first.\n\nClick the 'API Key' button in the header.")
+            return
+        
         tag_defs = self._get_tag_definitions()
         if not tag_defs:
             messagebox.showwarning("No Tags", "Add at least one tag definition.")
