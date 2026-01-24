@@ -2896,13 +2896,27 @@ class ProjectBrowser(ctk.CTkFrame):
             anchor="w"
         ).grid(row=1, column=1, sticky="w", pady=(0, 10))
         
-        # Open button
+        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+        btn_frame.grid(row=0, column=2, rowspan=2, padx=15)
+        
         ctk.CTkButton(
-            card,
+            btn_frame,
             text="Open",
-            width=80,
+            width=70,
             command=lambda p=project: self.app.show_project_editor(p)
-        ).grid(row=0, column=2, rowspan=2, padx=15)
+        ).pack(side="left", padx=2)
+        
+        ctk.CTkButton(
+            btn_frame,
+            text="⋮",
+            width=30,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda p=project: self._show_project_menu(p)
+        ).pack(side="left", padx=2)
+    
+    def _show_project_menu(self, project: Project):
+        ProjectContextMenu(self, project, self._refresh_projects)
     
     def _new_project(self):
         NewProjectDialog(self, self.app, self._refresh_projects)
@@ -3000,6 +3014,96 @@ class NewProjectDialog(ctk.CTkToplevel):
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create project: {e}")
+
+
+class ProjectContextMenu(ctk.CTkToplevel):
+    def __init__(self, parent, project: Project, callback):
+        super().__init__(parent)
+        self.project = project
+        self.callback = callback
+        self.parent = parent
+        
+        self.title("")
+        self.geometry("160x140")
+        self.resizable(False, False)
+        self.overrideredirect(True)
+        
+        x = parent.winfo_pointerx()
+        y = parent.winfo_pointery()
+        self.geometry(f"160x140+{x}+{y}")
+        
+        self.transient(parent)
+        
+        frame = ctk.CTkFrame(self, border_width=1, border_color="#555")
+        frame.pack(fill="both", expand=True)
+        
+        ctk.CTkButton(
+            frame, text="Rename", anchor="w", fg_color="transparent",
+            text_color=("#000", "#fff"), hover_color=("#e0e0e0", "#3a3a3a"),
+            command=self._rename
+        ).pack(fill="x", padx=5, pady=(5, 2))
+        
+        ctk.CTkButton(
+            frame, text="Duplicate", anchor="w", fg_color="transparent",
+            text_color=("#000", "#fff"), hover_color=("#e0e0e0", "#3a3a3a"),
+            command=self._duplicate
+        ).pack(fill="x", padx=5, pady=2)
+        
+        ctk.CTkButton(
+            frame, text="Delete", anchor="w", fg_color="transparent",
+            text_color="#ff6666", hover_color=("#ffcccc", "#4a2020"),
+            command=self._delete
+        ).pack(fill="x", padx=5, pady=2)
+        
+        ctk.CTkButton(
+            frame, text="Cancel", anchor="w", fg_color="transparent",
+            text_color="#888", hover_color=("#e0e0e0", "#3a3a3a"),
+            command=self.destroy
+        ).pack(fill="x", padx=5, pady=(2, 5))
+        
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<FocusOut>", lambda e: self.destroy())
+        
+        self.focus_set()
+    
+    def _rename(self):
+        self.destroy()
+        new_name = simpledialog.askstring("Rename Project", "New name:", initialvalue=self.project.name)
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            self.project.meta["name"] = new_name
+            self.project.save_meta()
+            self.callback()
+    
+    def _duplicate(self):
+        self.destroy()
+        new_name = simpledialog.askstring("Duplicate Project", "Name for copy:", 
+                                          initialvalue=f"{self.project.name} (copy)")
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            new_path = self.project.path.parent / new_name
+            if new_path.exists():
+                messagebox.showerror("Error", f"'{new_name}' already exists.")
+                return
+            try:
+                shutil.copytree(self.project.path, new_path)
+                new_project = Project(new_path)
+                new_project.meta["name"] = new_name
+                new_project.meta["created"] = datetime.now().isoformat()
+                new_project.save_meta()
+                self.callback()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to duplicate: {e}")
+    
+    def _delete(self):
+        self.destroy()
+        if messagebox.askyesno("Delete Project", 
+                               f"Delete '{self.project.name}' and all its data?\n\nThis cannot be undone."):
+            try:
+                shutil.rmtree(self.project.path)
+                self.callback()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete: {e}")
 
 
 class ProjectEditor(ctk.CTkFrame):
