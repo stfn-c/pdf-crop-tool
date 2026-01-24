@@ -29,12 +29,12 @@ from typing import Optional
 OPENROUTER_API_KEY = None
 
 VISION_MODELS = [
-    ("Google Gemini 2.0 Flash", "google/gemini-2.0-flash-001"),
-    ("Google Gemini 1.5 Flash", "google/gemini-flash-1.5"),
-    ("OpenAI GPT-4o", "openai/gpt-4o"),
-    ("OpenAI GPT-4o Mini", "openai/gpt-4o-mini"),
-    ("Anthropic Claude 3.5 Sonnet", "anthropic/claude-3.5-sonnet"),
-    ("Google Gemini 1.5 Pro", "google/gemini-pro-1.5"),
+    ("Gemini 3 Flash Preview", "google/gemini-3-flash-preview"),
+    ("Gemini 3 Pro Preview", "google/gemini-3-pro-preview"),
+    ("Claude Sonnet 4.5", "anthropic/claude-sonnet-4.5"),
+    ("Claude Opus 4.5", "anthropic/claude-opus-4.5"),
+    ("GPT-5.1", "openai/gpt-5.1"),
+    ("GPT-4.5 Preview", "openai/gpt-4.5-preview"),
 ]
 
 import customtkinter as ctk
@@ -1239,6 +1239,36 @@ class SourceEditor(ctk.CTkFrame):
         # Separator
         ctk.CTkFrame(sidebar, height=2).pack(fill="x", padx=15, pady=15)
         
+        # Actions
+        ctk.CTkLabel(
+            sidebar,
+            text="Actions",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(pady=(5, 8), padx=15, anchor="w")
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Copy Current Page",
+            command=self._copy_page
+        ).pack(fill="x", padx=15, pady=2)
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Auto-Detect Margins",
+            command=self._auto_detect_margins
+        ).pack(fill="x", padx=15, pady=2)
+        
+        ctk.CTkButton(
+            sidebar,
+            text="Export to PNG Folder",
+            fg_color="#28a745",
+            hover_color="#218838",
+            command=self._export_source
+        ).pack(fill="x", padx=15, pady=2)
+        
+        # Separator
+        ctk.CTkFrame(sidebar, height=2).pack(fill="x", padx=15, pady=15)
+        
         # Tags section
         ctk.CTkLabel(
             sidebar,
@@ -1284,7 +1314,7 @@ class SourceEditor(ctk.CTkFrame):
             fg_color="#6f42c1",
             hover_color="#5a32a3",
             command=self._ai_auto_tag
-        ).pack(fill="x", padx=15, pady=(10, 0))
+        ).pack(fill="x", padx=15, pady=(8, 0))
         
         self.quick_tags_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
         self.quick_tags_frame.pack(fill="x", padx=15, pady=(5, 0))
@@ -1296,35 +1326,6 @@ class SourceEditor(ctk.CTkFrame):
             wraplength=260
         )
         self.all_tags_label.pack(padx=15, pady=(5, 0), anchor="w")
-        
-        ctk.CTkFrame(sidebar, height=2).pack(fill="x", padx=15, pady=15)
-        
-        # Actions
-        ctk.CTkLabel(
-            sidebar,
-            text="Actions",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=(5, 10), padx=15, anchor="w")
-        
-        ctk.CTkButton(
-            sidebar,
-            text="Copy Current Page",
-            command=self._copy_page
-        ).pack(fill="x", padx=15, pady=3)
-        
-        ctk.CTkButton(
-            sidebar,
-            text="Auto-Detect Margins",
-            command=self._auto_detect_margins
-        ).pack(fill="x", padx=15, pady=3)
-        
-        ctk.CTkButton(
-            sidebar,
-            text="Export to PNG Folder",
-            fg_color="#28a745",
-            hover_color="#218838",
-            command=self._export_source
-        ).pack(fill="x", padx=15, pady=3)
         
         # Status
         self.status_label = ctk.CTkLabel(sidebar, text="", wraplength=260)
@@ -3078,7 +3079,7 @@ class ProjectEditor(ctk.CTkFrame):
         
         ctk.CTkButton(
             sidebar,
-            text="Add PNG from File",
+            text="Add PNG(s) from Files",
             command=self._add_custom_file
         ).pack(fill="x", padx=10, pady=3)
         
@@ -3628,27 +3629,30 @@ class ProjectEditor(ctk.CTkFrame):
         AddByTagsDialog(self, self.app, self.project, self._refresh_pages)
     
     def _add_custom_file(self):
-        filepath = filedialog.askopenfilename(
-            title="Select PNG",
-            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
+        filepaths = filedialog.askopenfilenames(
+            title="Select PNG(s)",
+            filetypes=[("PNG files", "*.png"), ("Image files", "*.png *.jpg *.jpeg"), ("All files", "*.*")]
         )
-        if not filepath:
+        if not filepaths:
             return
         
         try:
-            # Copy to project folder
-            src = Path(filepath)
-            dest = self.project.path / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{src.name}"
-            shutil.copy2(src, dest)
-            
-            self.project.add_page({
-                "type": "custom",
-                "filename": dest.name,
-                "source_name": src.stem
-            })
+            added = 0
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            for filepath in filepaths:
+                src = Path(filepath)
+                dest = self.project.path / f"custom_{timestamp}_{added}_{src.name}"
+                shutil.copy2(src, dest)
+                
+                self.project.add_page({
+                    "type": "custom",
+                    "filename": dest.name,
+                    "source_name": src.stem
+                })
+                added += 1
             
             self._refresh_pages()
-            self.status_label.configure(text=f"Added {src.name}")
+            self.status_label.configure(text=f"Added {added} image(s)")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to add image: {e}")
